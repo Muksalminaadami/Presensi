@@ -1,536 +1,704 @@
 <?php
 require_once __DIR__ . '/config.php';
 requireAdminLogin();
-date_default_timezone_set('Asia/Jakarta');
-
-$message = '';
-$messageType = 'info';
-
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $act = $_POST['act'] ?? '';
-
-    if ($act === 'add') {
-        $nim = trim($_POST['nim'] ?? '');
-        $nama = trim($_POST['nama'] ?? '');
-        $kelas = trim($_POST['kelas'] ?? '');
-        $jurusan = trim($_POST['jurusan'] ?? '');
-
-        if (mb_strlen($nim) < 3 || $nama === '') {
-            $message = 'NIM (minimal 3 karakter) dan Nama wajib diisi.';
-            $messageType = 'error';
-        } else {
-            try {
-                $stmt = $pdo->prepare(
-                    'INSERT INTO mahasiswa (nim, nama, kelas, jurusan) VALUES (?, ?, ?, ?)'
-                );
-                $stmt->execute([$nim, $nama, $kelas, $jurusan]);
-                $message = "Mahasiswa \"{$nama}\" ({$nim}) berhasil ditambahkan.";
-                $messageType = 'success';
-            } catch (PDOException $e) {
-                if ($e->getCode() === '23000') {
-                    $message = "NIM {$nim} sudah terdaftar.";
-                } else {
-                    $message = 'Gagal menambahkan: ' . $e->getMessage();
-                }
-                $messageType = 'error';
-            }
-        }
-    } elseif ($act === 'delete') {
-        $nim = trim($_POST['nim'] ?? '');
-        try {
-            // Hapus dalam satu transaksi supaya benar-benar "hapus
-            // mahasiswa + riwayat presensinya" seperti pesan yang
-            // ditampilkan (sebelumnya hanya baris mahasiswa yang
-            // terhapus, riwayat presensi lama tertinggal sebagai data
-            // yatim kalau tabel tidak diset ON DELETE CASCADE).
-            $pdo->beginTransaction();
-            $stmtPresensi = $pdo->prepare('DELETE FROM presensi WHERE nim = ?');
-            $stmtPresensi->execute([$nim]);
-            $stmtMhs = $pdo->prepare('DELETE FROM mahasiswa WHERE nim = ?');
-            $stmtMhs->execute([$nim]);
-            $pdo->commit();
-            $message = "Data mahasiswa NIM {$nim} dihapus (beserta riwayat presensinya).";
-            $messageType = 'success';
-        } catch (PDOException $e) {
-            $pdo->rollBack();
-            $message = 'Gagal menghapus: ' . $e->getMessage();
-            $messageType = 'error';
-        }
-    } elseif ($act === 'reset_hari_ini') {
-        $stmt = $pdo->prepare('DELETE FROM presensi WHERE tanggal = ?');
-        $stmt->execute([date('Y-m-d')]);
-        $message = 'Presensi hari ini berhasil direset.';
-        $messageType = 'success';
-    }
-
-    // Redirect supaya refresh halaman tidak mengulang submit form (pola PRG)
-    header('Location: admin.php?msg=' . urlencode($message) . '&type=' . $messageType);
-    exit;
-}
-
-if (isset($_GET['msg'])) {
-    $message = $_GET['msg'];
-    $requestedType = $_GET['type'] ?? 'info';
-    $messageType = in_array($requestedType, ['success', 'error', 'info'], true) ? $requestedType : 'info';
-}
-
-$mahasiswaList = $pdo->query('SELECT * FROM mahasiswa ORDER BY nama ASC')->fetchAll();
-
-$today = date('Y-m-d');
-$stmtToday = $pdo->prepare(
-    'SELECT nim, nama, kelas, waktu FROM presensi WHERE tanggal = ? ORDER BY waktu DESC'
-);
-$stmtToday->execute([$today]);
-$presensiHariIni = $stmtToday->fetchAll();
-
-$totalMahasiswa = count($mahasiswaList);
-$totalHadir = count($presensiHariIni);
 ?>
 <!DOCTYPE html>
 <html lang="id">
-<head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Kelola Data - Presensi Kelas</title>
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
-<link rel="preconnect" href="https://fonts.googleapis.com" />
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet" />
-<style>
-  :root {
-    --background: 0 0% 0%;
-    --foreground: 0 0% 100%;
-    --muted-foreground: 0 0% 65%;
-    --card: 0 0% 5%;
-    --border: 0 0% 20%;
-    --hero-subtitle: 210 17% 95%;
-    --accent: 152 55% 55%;
-  }
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  html { scroll-behavior: smooth; }
-  body {
-    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-    font-weight: 400;
-    background: hsl(var(--background));
-    color: hsl(var(--foreground));
-    min-height: 100vh;
-  }
-  table, th, td, .row-person, form.inline-form, .field input, button {
-    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-  }
-  a { color: inherit; }
-  .font-serif { font-family: 'Instrument Serif', Georgia, serif; }
-
-  /* ---------- liquid glass ---------- */
-  .liquid-glass {
-    background: rgba(255,255,255,0.01);
-    background-blend-mode: luminosity;
-    backdrop-filter: blur(4px);
-    -webkit-backdrop-filter: blur(4px);
-    border: none;
-    box-shadow: inset 0 1px 1px rgba(255,255,255,0.1);
-    position: relative;
-    overflow: hidden;
-  }
-  .liquid-glass::before {
-    content: '';
-    position: absolute;
-    inset: 0;
-    border-radius: inherit;
-    padding: 1.4px;
-    background: linear-gradient(180deg,
-      rgba(255,255,255,0.45) 0%, rgba(255,255,255,0.15) 20%,
-      rgba(255,255,255,0) 40%, rgba(255,255,255,0) 60%,
-      rgba(255,255,255,0.15) 80%, rgba(255,255,255,0.45) 100%);
-    -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
-    -webkit-mask-composite: xor;
-    mask-composite: exclude;
-    pointer-events: none;
-  }
-
-  /* ---------- entrance animation ---------- */
-  @keyframes fadeUp {
-    from { opacity: 0; transform: translateY(var(--rise, 20px)); }
-    to { opacity: 1; transform: translateY(0); }
-  }
-  .reveal { opacity: 0; animation: fadeUp 0.6s ease-out forwards; }
-
-  /* ---------- navbar ---------- */
-  .navbar {
-    display: flex; align-items: center; justify-content: space-between;
-    padding: 16px 24px; position: relative; z-index: 20;
-  }
-  @media (min-width: 768px) { .navbar { padding: 16px 112px; } }
-  .navbar .left { display: flex; align-items: center; gap: 20px; }
-  @media (min-width: 768px) { .navbar .left { gap: 60px; } }
-  .brand { display: flex; align-items: center; gap: 10px; }
-  .brand .mark {
-    width: 28px; height: 28px; border-radius: 8px;
-    background: linear-gradient(135deg, hsl(var(--accent)), hsl(var(--foreground)));
-    display: flex; align-items: center; justify-content: center;
-    color: #000; font-size: 13px; font-weight: 700;
-  }
-  .brand span { font-size: 20px; font-weight: 700; letter-spacing: -0.02em; }
-  .navlinks { display: none; gap: 4px; align-items: center; }
-  @media (min-width: 768px) { .navlinks { display: flex; } }
-  .navlinks a {
-    text-decoration: none; font-size: 14px; color: hsl(var(--muted-foreground));
-    padding: 8px 12px; border-radius: 8px; transition: color 0.2s, background 0.2s;
-  }
-  .navlinks a:hover, .navlinks a.active { color: hsl(var(--foreground)); background: rgba(255,255,255,0.06); }
-  .btn-solid {
-    background: hsl(var(--foreground)); color: hsl(var(--background));
-    border-radius: 8px; font-size: 14px; font-weight: 600; padding: 9px 18px;
-    text-decoration: none; border: none; cursor: pointer; display: inline-flex;
-    align-items: center; gap: 8px; transition: opacity 0.2s;
-  }
-  .btn-solid:hover { opacity: 0.85; }
-
-  /* ---------- hero ---------- */
-  .hero {
-    position: relative; overflow: hidden; padding-bottom: 90px;
-  }
-  .hero-video-wrap {
-    position: relative; width: 100vw; margin-left: calc(-50vw + 50%);
-    aspect-ratio: 21 / 9; max-height: 60vh; overflow: hidden;
-  }
-  .hero-video-wrap video {
-    position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover;
-    filter: brightness(0.55);
-  }
-  .hero-overlay {
-    position: absolute; inset: 0;
-    background: linear-gradient(180deg, rgba(0,0,0,0.35) 0%, rgba(0,0,0,0.55) 55%, hsl(var(--background)) 100%);
-  }
-  .hero-content {
-    position: relative; z-index: 10; margin-top: -180px;
-    display: flex; flex-direction: column; align-items: center; text-align: center;
-    padding: 0 16px;
-  }
-  .tag-pill {
-    display: inline-flex; align-items: center; gap: 10px;
-    padding: 8px 12px; border-radius: 10px; margin-bottom: 24px;
-  }
-  .tag-pill .badge {
-    background: hsl(var(--foreground)); color: hsl(var(--background));
-    border-radius: 6px; font-size: 13px; font-weight: 500; padding: 2px 8px;
-  }
-  .tag-pill .txt { font-size: 14px; font-weight: 500; color: hsl(var(--muted-foreground)); }
-
-  h1.hero-title {
-    font-size: 40px; font-weight: 500; letter-spacing: -2px; line-height: 1.15;
-    font-family: 'Inter', sans-serif;
-    margin-bottom: 14px;
-  }
-  @media (min-width: 768px) { h1.hero-title { font-size: 60px; } }
-  h1.hero-title .accent { font-family: 'Instrument Serif', Georgia, serif; font-style: italic; font-weight: 400; }
-
-  .hero-subtitle {
-    font-size: 17px; line-height: 24px; opacity: 0.9;
-    color: hsl(var(--hero-subtitle)); margin-bottom: 32px; max-width: 480px;
-  }
-
-  .hero-stats { display: flex; gap: 14px; flex-wrap: wrap; justify-content: center; margin-bottom: 32px; }
-  .stat-chip {
-    padding: 14px 22px; border-radius: 14px; text-align: left; min-width: 150px;
-  }
-  .stat-chip .num { font-size: 26px; font-weight: 700; }
-  .stat-chip .label { font-size: 12px; color: hsl(var(--muted-foreground)); margin-top: 2px; }
-
-  .hero-cta {
-    background: hsl(var(--foreground)); color: hsl(var(--background));
-    border-radius: 999px; padding: 14px 32px; font-size: 15px; font-weight: 500;
-    text-decoration: none; display: inline-flex; align-items: center; gap: 8px;
-    transition: transform 0.15s ease;
-  }
-  .hero-cta:hover { transform: scale(1.03); }
-  .hero-cta:active { transform: scale(0.98); }
-
-  /* ---------- main content ---------- */
-  .content { max-width: 900px; margin: 0 auto; padding: 0 20px 90px; position: relative; z-index: 10; }
-
-  .banner {
-    padding: 13px 16px; margin-bottom: 26px; border-radius: 12px; border-left: 3px solid;
-    font-size: 13.5px; display: flex; align-items: center; gap: 10px;
-    background: hsl(var(--card)); border: 1px solid hsl(var(--border)); border-left-width: 3px;
-  }
-  .banner.success { border-left-color: #34d399; color: #86efac; }
-  .banner.error { border-left-color: #f87171; color: #fca5a5; }
-  .banner.info { border-left-color: #7dd3fc; color: #bae6fd; }
-
-  .card-section {
-    background: hsl(var(--card)); border: 1px solid hsl(var(--border));
-    border-radius: 20px; padding: 24px; margin-bottom: 24px;
-  }
-  .card-head {
-    display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px;
-    margin-bottom: 18px;
-  }
-  .card-head h2 { font-size: 16px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
-  .card-head h2 i { color: hsl(var(--accent)); font-size: 13px; }
-  .card-head .aux { font-size: 12px; color: hsl(var(--muted-foreground)); }
-
-  form.inline-form { display: flex; flex-direction: column; gap: 12px; max-width: 520px; }
-  .field { display: flex; flex-direction: column; gap: 5px; }
-  .field label { font-size: 12px; color: hsl(var(--muted-foreground)); }
-  .field input {
-    padding: 10px 12px; border-radius: 10px; border: 1px solid hsl(var(--border));
-    background: rgba(255,255,255,0.03); color: hsl(var(--foreground)); font-size: 14px;
-    font-family: 'Inter', sans-serif;
-  }
-  .field input:focus { outline: none; border-color: hsl(var(--accent)); }
-  form.inline-form button {
-    align-self: flex-start; margin-top: 4px; padding: 10px 22px; border: none;
-    border-radius: 999px; background: hsl(var(--foreground)); color: hsl(var(--background));
-    font-weight: 600; cursor: pointer; font-size: 13.5px; display: inline-flex; align-items: center; gap: 8px;
-    transition: opacity 0.2s;
-  }
-  form.inline-form button:hover { opacity: 0.85; }
-
-  .table-scroll { max-height: 380px; overflow-y: auto; padding: 2px; }
-  .glass-list { display: flex; flex-direction: column; gap: 8px; }
-  .glass-list-head {
-    display: flex; align-items: center; padding: 0 18px; margin-bottom: 2px;
-    color: hsl(var(--muted-foreground)); font-size: 11px; font-weight: 600;
-    text-transform: uppercase; letter-spacing: 0.06em;
-  }
-  .glass-row {
-    border-radius: 16px; padding: 12px 18px; display: flex; align-items: center; gap: 14px;
-    transition: background 0.2s ease, transform 0.15s ease;
-  }
-  .glass-row:hover { background: rgba(255,255,255,0.035); }
-  .col { display: flex; flex-direction: column; }
-  .col-person { flex: 1.4; min-width: 0; }
-  .col-kelas { flex: 0.7; }
-  .col-jurusan { flex: 1; }
-  .col-waktu { flex: 0.7; }
-  .col-action { flex: 0 0 auto; margin-left: auto; }
-  .col .val { font-size: 13.5px; color: hsl(var(--foreground)); font-weight: 500; }
-  .col .val.mono-time { font-variant-numeric: tabular-nums; font-weight: 600; }
-  .col-truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-  .row-person { display: flex; align-items: center; gap: 12px; min-width: 0; }
-  .row-person .avatar {
-    width: 34px; height: 34px; border-radius: 999px; flex-shrink: 0;
-    background: rgba(255,255,255,0.04); border: 2px solid hsl(var(--foreground));
-    display: flex; align-items: center; justify-content: center;
-    font-size: 12px; font-weight: 700; font-family: 'Inter', sans-serif;
-    backdrop-filter: blur(4px);
-  }
-  .row-person .meta { display: flex; flex-direction: column; line-height: 1.35; min-width: 0; }
-  .row-person .meta .name {
-    font-weight: 600; letter-spacing: -0.01em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  }
-  .row-person .meta .sub { font-size: 12px; color: hsl(var(--muted-foreground)); font-variant-numeric: tabular-nums; }
-
-  @media (max-width: 620px) {
-    .col-jurusan { display: none; }
-    .glass-list-head .col-jurusan { display: none; }
-  }
-
-  .del-btn {
-    background: rgba(248,113,113,0.08); color: #fca5a5; border: 1px solid rgba(248,113,113,0.3);
-    border-radius: 10px; padding: 7px 11px; font-size: 12px; cursor: pointer;
-    backdrop-filter: blur(4px); transition: background 0.2s;
-  }
-  .del-btn:hover { background: rgba(248,113,113,0.18); }
-
-  .reset-btn {
-    background: transparent; color: hsl(var(--muted-foreground)); border: 1px solid hsl(var(--border));
-    border-radius: 8px; padding: 7px 14px; font-size: 11.5px; cursor: pointer; transition: color 0.2s, border-color 0.2s;
-  }
-  .reset-btn:hover { color: hsl(var(--foreground)); border-color: hsl(var(--foreground)); }
-
-  .empty-note { color: hsl(var(--muted-foreground)); font-size: 13px; padding: 18px 0; text-align: center; }
-
-  @media (max-width: 560px) {
-    .hero-content { margin-top: -140px; }
-    h1.hero-title { font-size: 32px; }
-  }
-</style>
-</head>
-<body>
-  <header class="navbar">
-    <div class="left">
-      <a href="dashboard_admin.php" class="brand">
-        <span class="mark">P</span>
-        <span>Presensi<span style="opacity:.5">Kelas</span></span>
-      </a>
-      <nav class="navlinks">
-        <a href="dashboard_admin.php">Beranda</a>
-        <a href="admin.php" class="active">Kelola Data</a>
-      </nav>
-    </div>
-    <a href="logout.php" class="btn-solid"><i class="fas fa-right-from-bracket"></i> Logout</a>
-  </header>
-
-  <section class="hero">
-    <div class="hero-video-wrap">
-      <video autoplay muted loop playsinline>
-        <source src="https://d8j0ntlcm91z4.cloudfront.net/user_38xzZboKViGWJOttwIXH07lWA1P/hf_20260307_083826_e938b29f-a43a-41ec-a153-3d4730578ab8.mp4" type="video/mp4" />
-      </video>
-      <div class="hero-overlay"></div>
-    </div>
-
-    <div class="hero-content" id="heroContent">
-      <div class="tag-pill liquid-glass reveal" style="--rise:10px; animation-delay:0s;">
-        <span class="badge">Admin</span>
-        <span class="txt">Panel Kelola Mahasiswa &amp; Presensi</span>
-      </div>
-
-      <h1 class="hero-title reveal" style="--rise:20px; animation-delay:0.1s;">
-        Kelola Data.<br />
-        <span class="accent">Presensi Kelas.</span>
-      </h1>
-
-      <p class="hero-subtitle reveal" style="--rise:20px; animation-delay:0.2s;">
-        Tambah mahasiswa, pantau kehadiran hari ini,<br />
-        dan kelola seluruh data presensi dari satu halaman.
-      </p>
-
-      <div class="hero-stats reveal" style="--rise:20px; animation-delay:0.3s;">
-        <div class="stat-chip liquid-glass">
-          <div class="num"><?= $totalMahasiswa ?></div>
-          <div class="label">Total mahasiswa</div>
-        </div>
-        <div class="stat-chip liquid-glass">
-          <div class="num"><?= $totalHadir ?></div>
-          <div class="label">Hadir hari ini &middot; <?= htmlspecialchars($today) ?></div>
-        </div>
-      </div>
-
-      <a href="#tambah" class="hero-cta reveal" style="--rise:20px; animation-delay:0.4s;">
-        <i class="fas fa-user-plus"></i> Tambah Mahasiswa
-      </a>
-    </div>
-  </section>
-
-  <main class="content">
-    <?php if ($message): ?>
-      <div class="banner <?= htmlspecialchars($messageType) ?>">
-        <i class="fas <?= $messageType === 'success' ? 'fa-check-circle' : ($messageType === 'error' ? 'fa-exclamation-circle' : 'fa-info-circle') ?>"></i>
-        <?= htmlspecialchars($message) ?>
-      </div>
-    <?php endif; ?>
-
-    <section class="card-section">
-      <div class="card-head">
-        <h2><i class="fas fa-clipboard-check"></i> Presensi Hari Ini</h2>
-        <form method="post" onsubmit="return confirm('Reset semua presensi hari ini?');">
-          <input type="hidden" name="act" value="reset_hari_ini" />
-          <button type="submit" class="reset-btn"><i class="fas fa-rotate-left"></i> Reset</button>
-        </form>
-      </div>
-      <div class="table-scroll">
-        <?php if (empty($presensiHariIni)): ?>
-          <div class="empty-note">Belum ada yang presensi hari ini.</div>
-        <?php else: ?>
-          <div class="glass-list-head">
-            <span class="col-person">Mahasiswa</span>
-            <span class="col-kelas">Kelas</span>
-            <span class="col-waktu">Waktu</span>
-          </div>
-          <div class="glass-list">
-            <?php foreach ($presensiHariIni as $p):
-              $initial = mb_strtoupper(mb_substr($p['nama'], 0, 1));
-            ?>
-              <div class="glass-row liquid-glass">
-                <div class="col col-person">
-                  <div class="row-person">
-                    <div class="avatar"><?= htmlspecialchars($initial) ?></div>
-                    <div class="meta">
-                      <span class="name"><?= htmlspecialchars($p['nama']) ?></span>
-                      <span class="sub"><?= htmlspecialchars($p['nim']) ?></span>
-                    </div>
-                  </div>
-                </div>
-                <div class="col col-kelas"><span class="val col-truncate"><?= htmlspecialchars($p['kelas']) ?></span></div>
-                <div class="col col-waktu"><span class="val mono-time"><?= htmlspecialchars(date('H:i:s', strtotime($p['waktu']))) ?></span></div>
-              </div>
-            <?php endforeach; ?>
-          </div>
-        <?php endif; ?>
-      </div>
-    </section>
-
-    <section class="card-section" id="tambah">
-      <div class="card-head">
-        <h2><i class="fas fa-user-plus"></i> Tambah Mahasiswa</h2>
-      </div>
-      <form class="inline-form" method="post">
-        <input type="hidden" name="act" value="add" />
-        <div class="field"><label for="f-nim">NIM</label><input id="f-nim" type="text" name="nim" placeholder="mis. 2210101" maxlength="20" required /></div>
-        <div class="field"><label for="f-nama">Nama</label><input id="f-nama" type="text" name="nama" placeholder="Nama lengkap" maxlength="100" required /></div>
-        <div class="field"><label for="f-kelas">Kelas</label><input id="f-kelas" type="text" name="kelas" placeholder="mis. TI-A" maxlength="50" /></div>
-        <div class="field"><label for="f-jurusan">Jurusan</label><input id="f-jurusan" type="text" name="jurusan" placeholder="mis. Teknik Informatika" maxlength="100" /></div>
-        <button type="submit"><i class="fas fa-plus"></i> Tambah</button>
-      </form>
-    </section>
-
-    <section class="card-section">
-      <div class="card-head">
-        <h2><i class="fas fa-users"></i> Daftar Mahasiswa</h2>
-        <span class="aux"><?= $totalMahasiswa ?> orang</span>
-      </div>
-      <div class="table-scroll">
-        <?php if (empty($mahasiswaList)): ?>
-          <div class="empty-note">Belum ada mahasiswa. Tambahkan lewat form di atas.</div>
-        <?php else: ?>
-          <div class="glass-list-head">
-            <span class="col-person">Mahasiswa</span>
-            <span class="col-kelas">Kelas</span>
-            <span class="col-jurusan">Jurusan</span>
-          </div>
-          <div class="glass-list">
-            <?php foreach ($mahasiswaList as $m):
-              $initial = mb_strtoupper(mb_substr($m['nama'], 0, 1));
-            ?>
-              <div class="glass-row liquid-glass">
-                <div class="col col-person">
-                  <div class="row-person">
-                    <div class="avatar"><?= htmlspecialchars($initial) ?></div>
-                    <div class="meta">
-                      <span class="name"><?= htmlspecialchars($m['nama']) ?></span>
-                      <span class="sub"><?= htmlspecialchars($m['nim']) ?></span>
-                    </div>
-                  </div>
-                </div>
-                <div class="col col-kelas"><span class="val col-truncate"><?= htmlspecialchars($m['kelas']) ?></span></div>
-                <div class="col col-jurusan"><span class="val col-truncate"><?= htmlspecialchars($m['jurusan']) ?></span></div>
-                <div class="col col-action">
-                  <form method="post" onsubmit="return confirm('Hapus <?= htmlspecialchars(addslashes($m['nama'])) ?>? Riwayat presensinya juga akan terhapus.');">
-                    <input type="hidden" name="act" value="delete" />
-                    <input type="hidden" name="nim" value="<?= htmlspecialchars($m['nim']) ?>" />
-                    <button type="submit" class="del-btn"><i class="fas fa-trash"></i></button>
-                  </form>
-                </div>
-              </div>
-            <?php endforeach; ?>
-          </div>
-        <?php endif; ?>
-      </div>
-    </section>
-  </main>
-
-  <script>
-    // Parallax + fade ringan pada hero saat scroll (padanan sederhana dari
-    // useScroll/useTransform Framer Motion di spek, tanpa dependency React).
-    const heroContent = document.getElementById('heroContent');
-    const heroVideoWrap = document.querySelector('.hero-video-wrap video');
-    const heroSection = document.querySelector('.hero');
-
-    function onScroll() {
-      const rect = heroSection.getBoundingClientRect();
-      const start = 0;
-      const end = heroSection.offsetHeight;
-      const progress = Math.min(Math.max((start - rect.top) / end, 0), 1);
-
-      heroContent.style.transform = `translateY(${progress * -80}px)`;
-      heroContent.style.opacity = String(1 - Math.min(progress * 2, 1));
-      if (heroVideoWrap) {
-        heroVideoWrap.style.transform = `translateY(${progress * 60}px)`;
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta name="theme-color" content="#0b0d12" />
+    <title>Presensi Kelas - Admin</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:ital,wght@0,500;0,600;0,700;1,500;1,600&family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <style>
+      :root {
+        --ink: #0b0d12;
+        --surface: #12151c;
+        --surface-2: #171c26;
+        --line: #262c3a;
+        --text: #e8ebf1;
+        --text-muted: #8b93a6;
+        --accent: #6c8ef5;
+        --accent-soft: rgba(108, 142, 245, 0.14);
+        --success: #3ddc97;
+        --success-soft: rgba(61, 220, 151, 0.14);
+        --danger: #ef7a6d;
+        --danger-soft: rgba(239, 122, 109, 0.14);
+        --warn: #e0ab4d;
+        --warn-soft: rgba(224, 171, 77, 0.14);
+        --info: #5aa9e6;
+        --info-soft: rgba(90, 169, 230, 0.14);
+        --glass: rgba(18, 21, 28, 0.74);
+        --glass-strong: rgba(15, 18, 24, 0.9);
+        --wash: rgba(6, 7, 10, 0.62);
       }
-    }
-    window.addEventListener('scroll', onScroll, { passive: true });
-  </script>
-</body>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { height: 100%; }
+      body {
+        font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        background: var(--ink);
+        min-height: 100vh;
+        color: var(--text);
+        padding: 32px 18px 60px;
+        position: relative;
+      }
+
+      /* ============================================================
+         Background reveal layer — full-page, sits behind everything.
+         Mouse trail wipes the front lily to reveal the second lily
+         beneath it; everything else in the layout floats on top in
+         frosted panels so text stays readable.
+
+         FIX (iPad/Safari): now rendered with two stacked <canvas>
+         elements instead of CSS mask-image + toDataURL() per frame.
+         The old approach re-encoded a PNG data URL 60x/second which
+         is extremely slow and unstable on WebKit/iOS, causing the
+         glitching/stuttering on iPad.
+         ============================================================ */
+      .bg-effect {
+        position: fixed;
+        inset: 0;
+        z-index: 0;
+        overflow: hidden;
+        background: var(--ink);
+        pointer-events: none;
+      }
+      .bg-layer {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        display: block;
+        filter: saturate(0.55) brightness(0.62) contrast(1.05);
+      }
+      .bg-layer--reveal { z-index: 1; opacity: 0.9; filter: saturate(0.8) brightness(0.72) contrast(1.05); }
+      .bg-layer--front { z-index: 2; }
+      .bg-wash {
+        position: absolute;
+        inset: 0;
+        z-index: 3;
+        background: var(--wash);
+      }
+
+      .page { max-width: 1100px; margin: 0 auto; position: relative; z-index: 2; }
+
+      .layout {
+        display: grid;
+        grid-template-columns: 360px 1fr;
+        align-items: start;
+        gap: 28px;
+      }
+      .col-qr { display: flex; flex-direction: column; }
+      .col-list { min-width: 0; }
+
+      @media (max-width: 860px) {
+        .page { max-width: 640px; }
+        .layout { grid-template-columns: 1fr; gap: 22px; }
+      }
+
+      .top {
+        display: flex; align-items: center; justify-content: space-between;
+        padding: 12px 16px; margin-bottom: 28px; border: 1px solid var(--line);
+        flex-wrap: wrap; gap: 10px;
+        background: var(--glass);
+        backdrop-filter: blur(14px);
+        -webkit-backdrop-filter: blur(14px);
+        border-radius: 10px;
+      }
+      .top .who { font-size: 12px; color: var(--text-muted); display: flex; align-items: center; gap: 6px; }
+      .top nav { display: flex; gap: 18px; }
+      .top nav a {
+        color: var(--text-muted); text-decoration: none; font-size: 13px;
+        display: inline-flex; align-items: center; gap: 6px; padding-bottom: 2px;
+        border-bottom: 1px solid transparent;
+      }
+      .top nav a:hover { color: var(--text); border-bottom-color: var(--accent); }
+
+      .hero { text-align: center; margin-bottom: 30px; }
+      .hero h1 {
+        font-family: "Source Serif 4", Georgia, serif; font-style: italic; font-weight: 600; font-size: 26px;
+        margin-bottom: 6px; color: var(--text); letter-spacing: 0.01em;
+      }
+      .hero .subtitle { font-size: 13px; color: var(--text-muted); max-width: 400px; margin: 0 auto; }
+
+      .qr-frame {
+        width: 100%; max-width: 280px; margin: 0 auto 14px; padding: 18px; background: var(--glass-strong);
+        backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+        border: 1px solid var(--line); border-radius: 10px; text-align: center;
+        box-shadow: 0 20px 40px -20px rgba(0, 0, 0, 0.6);
+      }
+      #qrImage {
+        width: 220px; height: 220px; display: block; margin: 0 auto;
+        border-radius: 4px; background: #fff; padding: 6px;
+      }
+      .qr-frame .qr-label {
+        margin-top: 10px; font-size: 11px; color: var(--text-muted);
+        display: flex; align-items: center; justify-content: center; gap: 6px;
+      }
+
+      .countdown-bar {
+        height: 2px; background: var(--line); margin: 0 auto 8px; max-width: 260px; border-radius: 2px; overflow: hidden;
+      }
+      .countdown-bar .fill { height: 100%; background: var(--accent); width: 100%; transition: width 1s linear; }
+      .countdown-note {
+        text-align: center; font-size: 12px; color: var(--text-muted); margin-bottom: 20px;
+        font-family: "IBM Plex Mono", monospace;
+      }
+
+      .btn-group { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin-bottom: 10px; }
+      .btn {
+        padding: 9px 18px; border-radius: 6px; font-weight: 600; font-size: 13px;
+        cursor: pointer; display: inline-flex; align-items: center; gap: 8px;
+        text-decoration: none; border: 1px solid transparent; transition: background 0.15s, border-color 0.15s, color 0.15s;
+      }
+      .btn-primary { background: var(--accent); color: #0b0d12; }
+      .btn-primary:hover { background: #85a2f7; }
+      .btn-outline { background: transparent; color: var(--text); border-color: var(--line); }
+      .btn-outline:hover { background: var(--surface-2); border-color: var(--accent); }
+
+      #status {
+        max-width: 400px; margin: 0 auto 6px; padding: 10px 14px; border-radius: 6px;
+        font-size: 13px; display: none; align-items: center; gap: 10px; border-left: 3px solid;
+        backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+      }
+      #status.success { display: flex; background: var(--success-soft); border-color: var(--success); color: var(--success); }
+      #status.error { display: flex; background: var(--danger-soft); border-color: var(--danger); color: var(--danger); }
+      #status.info { display: flex; background: var(--info-soft); border-color: var(--info); color: var(--info); }
+      #status.warning { display: flex; background: var(--warn-soft); border-color: var(--warn); color: var(--warn); }
+
+      .connection-status {
+        display: flex; align-items: center; gap: 6px; justify-content: center;
+        font-size: 11px; color: var(--text-muted); margin-bottom: 28px;
+      }
+      .connection-status .dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
+      .connection-status .dot.online { background: var(--success); box-shadow: 0 0 0 3px var(--success-soft); }
+      .connection-status .dot.offline { background: var(--danger); box-shadow: 0 0 0 3px var(--danger-soft); }
+      .connection-status .dot.checking { background: var(--warn); box-shadow: 0 0 0 3px var(--warn-soft); }
+
+      .data-section {
+        border: 1px solid var(--line); padding: 18px 18px 20px;
+        background: var(--glass); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+        border-radius: 12px;
+        box-shadow: 0 24px 48px -28px rgba(0, 0, 0, 0.65);
+      }
+      .data-header {
+        display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 14px;
+      }
+      .data-header .title {
+        font-family: "Source Serif 4", Georgia, serif; font-style: italic; font-weight: 600;
+        font-size: 17px; display: flex; align-items: center; gap: 8px; color: var(--text);
+      }
+      .data-header .title i { color: var(--accent); font-style: normal; font-size: 13px; }
+      .data-header .count {
+        font-size: 11px; color: var(--text-muted); font-family: "IBM Plex Mono", monospace;
+        letter-spacing: 0.02em;
+      }
+
+      .table-wrapper {
+        max-height: 520px; overflow-y: auto; border: 1px solid var(--line); border-radius: 8px;
+      }
+      table { width: 100%; border-collapse: collapse; font-size: 13px; }
+      table th {
+        padding: 10px 12px; text-align: left; color: var(--text-muted); font-weight: 500;
+        font-size: 10.5px; font-family: "IBM Plex Mono", monospace; letter-spacing: 0.06em;
+        border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--surface-2);
+      }
+      table tbody tr { transition: background 0.12s; }
+      table tbody tr:hover { background: rgba(255, 255, 255, 0.03); }
+      table td { padding: 10px 12px; border-bottom: 1px solid var(--line); color: var(--text); }
+      table tbody tr:last-child td { border-bottom: none; }
+      table .status-hadir { color: var(--success); font-weight: 600; }
+      table .status-belum { color: var(--text-muted); }
+
+      .loading-text { text-align: center; padding: 20px; color: var(--text-muted); font-size: 13px; }
+
+      /* ============================================================
+         Brand mark + gradient wordmark
+         ============================================================ */
+      .brand-mark {
+        width: 13px; height: 13px; display: inline-block; vertical-align: -1px;
+        stroke: var(--accent); stroke-width: 6; stroke-linecap: square;
+      }
+      .hero h1 .word-a { color: var(--text); }
+      .hero h1 .word-b {
+        background: linear-gradient(180deg, #a9bdfb 0%, #6c8ef5 55%, #8f6cf5 100%);
+        -webkit-background-clip: text; background-clip: text; color: transparent;
+      }
+
+      /* ============================================================
+         Glow pulse behind the QR frame
+         ============================================================ */
+      .qr-frame { position: relative; isolation: isolate; }
+      .qr-frame::before {
+        content: ""; position: absolute; inset: -30px; z-index: -1; border-radius: 50%;
+        background: radial-gradient(circle, var(--accent-soft) 0%, transparent 70%);
+        animation: glowPulse 4.5s ease-in-out infinite;
+      }
+      @keyframes glowPulse {
+        0%, 100% { opacity: 0.5; transform: scale(0.94); }
+        50% { opacity: 1; transform: scale(1.04); }
+      }
+
+      /* ============================================================
+         Button micro-interactions
+         ============================================================ */
+      .btn { transform: translateY(0); transition: background 0.15s, border-color 0.15s, color 0.15s, transform 0.15s, box-shadow 0.15s; }
+      .btn:active { transform: translateY(1px); }
+      .btn-primary:hover { transform: translateY(-1px); box-shadow: 0 10px 24px -12px rgba(108, 142, 245, 0.55); }
+      .btn-outline:hover { transform: translateY(-1px); }
+
+      /* ============================================================
+         Entrance choreography — one orchestrated reveal on load,
+         never replays. Respects prefers-reduced-motion.
+         ============================================================ */
+      @keyframes riseIn {
+        from { opacity: 0; transform: translateY(16px); }
+        to { opacity: 1; transform: translateY(0); }
+      }
+      .anim .top { animation: riseIn 0.6s var(--ease-reveal, cubic-bezier(.16,1,.3,1)) both; animation-delay: 0.05s; }
+      .anim .hero { animation: riseIn 0.7s cubic-bezier(.16,1,.3,1) both; animation-delay: 0.16s; }
+      .anim .qr-frame { animation: riseIn 0.75s cubic-bezier(.16,1,.3,1) both; animation-delay: 0.28s; }
+      .anim .countdown-bar, .anim .countdown-note { animation: riseIn 0.6s ease both; animation-delay: 0.4s; }
+      .anim .btn-group { animation: riseIn 0.6s ease both; animation-delay: 0.48s; }
+      .anim .connection-status { animation: riseIn 0.6s ease both; animation-delay: 0.54s; }
+      .anim .data-section { animation: riseIn 0.7s cubic-bezier(.16,1,.3,1) both; animation-delay: 0.6s; }
+
+      @media (prefers-reduced-motion: reduce) {
+        .anim .top, .anim .hero, .anim .qr-frame, .anim .countdown-bar,
+        .anim .countdown-note, .anim .btn-group, .anim .connection-status,
+        .anim .data-section, .qr-frame::before {
+          animation: none !important; opacity: 1 !important; transform: none !important;
+        }
+      }
+    </style>
+  </head>
+  <body class="anim">
+    <div class="bg-effect" aria-hidden="true">
+      <canvas id="bgReveal" class="bg-layer bg-layer--reveal"></canvas>
+      <canvas id="bgFront" class="bg-layer bg-layer--front"></canvas>
+      <div class="bg-wash"></div>
+    </div>
+    <div class="page">
+      <div class="top">
+        <span class="who">
+          <svg class="brand-mark" viewBox="0 0 66 62" aria-hidden="true">
+            <line x1="33" y1="1" x2="33" y2="61" />
+            <line x1="3" y1="31" x2="63" y2="31" />
+            <line x1="11.8" y1="9.8" x2="54.2" y2="52.2" />
+            <line x1="54.2" y1="9.8" x2="11.8" y2="52.2" />
+          </svg>
+          <?= htmlspecialchars($_SESSION['admin_username'] ?? 'admin') ?>
+        </span>
+        <nav>
+          <a href="admin.php"><i class="fas fa-database"></i> Kelola Data</a>
+          <a href="logout.php"><i class="fas fa-right-from-bracket"></i> Logout</a>
+        </nav>
+      </div>
+
+      <div class="layout">
+        <section class="col-qr">
+          <div class="hero">
+            <h1><span class="word-a">Presensi</span> <span class="word-b">Kelas</span></h1>
+            <p class="subtitle">Tampilkan QR ini di layar kelas, mahasiswa scan dari HP masing-masing</p>
+          </div>
+
+          <div class="qr-frame">
+            <img id="qrImage" src="" alt="QR Code Presensi" />
+            <div class="qr-label"><i class="fas fa-shield-halved"></i> QR berganti otomatis tiap <?= (int) QR_SESI_DURASI ?> detik</div>
+          </div>
+          <div class="countdown-bar"><div class="fill" id="countdownFill"></div></div>
+          <div class="countdown-note" id="countdownNote">Memuat QR...</div>
+
+          <div class="btn-group">
+            <button class="btn btn-primary" onclick="loadDataMahasiswa()">
+              <i class="fas fa-sync-alt"></i> Refresh Data
+            </button>
+            <a href="admin.php" class="btn btn-outline">
+              <i class="fas fa-database"></i> Kelola Data
+            </a>
+          </div>
+
+          <div class="connection-status" id="connectionStatus">
+            <span class="dot offline" id="statusDot"></span>
+            <span id="statusLabel">Offline</span>
+          </div>
+
+          <div id="status" class="status" style="display: none"></div>
+        </section>
+
+        <section class="col-list">
+          <div class="data-section">
+            <div class="data-header">
+              <div class="title"><i class="fas fa-users"></i> Daftar Mahasiswa</div>
+              <span class="count" id="totalMahasiswa">0 mahasiswa</span>
+            </div>
+            <div class="table-wrapper" id="tableWrapper">
+              <div class="loading-text" id="loadingData">
+                <i class="fas fa-spinner fa-spin"></i> Memuat data...
+              </div>
+              <table id="dataTable" style="display: none">
+                <thead>
+                  <tr><th>nim</th><th>nama</th><th>kelas</th><th>status</th></tr>
+                </thead>
+                <tbody id="tableBody"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+      </div>
+    </div>
+
+    <script>
+      const API_URL = "api.php";
+
+      const DOM = {
+        qrImage: document.getElementById("qrImage"),
+        countdownFill: document.getElementById("countdownFill"),
+        countdownNote: document.getElementById("countdownNote"),
+        status: document.getElementById("status"),
+        tableBody: document.getElementById("tableBody"),
+        dataTable: document.getElementById("dataTable"),
+        loadingData: document.getElementById("loadingData"),
+        totalMahasiswa: document.getElementById("totalMahasiswa"),
+        statusDot: document.getElementById("statusDot"),
+        statusLabel: document.getElementById("statusLabel"),
+      };
+
+      let qrExpiresAt = 0;
+      let qrTickTimer = null;
+      let isFetchingQr = false; // cegah request numpuk kalau fetch lambat/gagal berulang
+
+      function showStatus(message, type = "info", duration = 4000) {
+        const iconMap = {
+          success: "fa-check-circle", error: "fa-exclamation-circle",
+          warning: "fa-triangle-exclamation", info: "fa-info-circle",
+        };
+        DOM.status.innerHTML = `<i class="fas ${iconMap[type] || iconMap.info}"></i> ${message}`;
+        DOM.status.className = "status " + type;
+        DOM.status.style.display = "flex";
+        clearTimeout(DOM.status._hideTimeout);
+        DOM.status._hideTimeout = setTimeout(() => { DOM.status.style.display = "none"; }, duration);
+      }
+
+      function setConnectionStatus(status, message) {
+        DOM.statusDot.className = "dot " + status;
+        DOM.statusLabel.textContent = message;
+      }
+
+      // ============================================================
+      // QR SESI (auto-refresh)
+      // ============================================================
+      async function fetchQrToken() {
+        if (isFetchingQr) return; // sudah ada request berjalan, jangan numpuk
+        isFetchingQr = true;
+        try {
+          const res = await fetch(API_URL + "?action=get_qr_token", {
+            headers: { Accept: "application/json" },
+          });
+          if (res.status === 401) {
+            window.location.href = "login.php";
+            return;
+          }
+
+          let data = null;
+          try {
+            data = await res.json();
+          } catch (parseErr) {
+            // Respons bukan JSON valid (mis. fatal error PHP) - tampilkan
+            // status code-nya supaya lebih mudah didiagnosis daripada
+            // cuma "gagal ambil QR" generik.
+            setConnectionStatus("offline", `Respons server tidak valid (HTTP ${res.status})`);
+            return;
+          }
+
+          if (!res.ok || data.error) {
+            setConnectionStatus("offline", `${data.detail || data.error || "Gagal ambil QR (HTTP " + res.status + ")"}`);
+            return;
+          }
+
+          if (data && data.token) {
+            const qrPayload = JSON.stringify({ token: data.token });
+            DOM.qrImage.src = `https://api.qrserver.com/v1/create-qr-code/?size=320x320&data=${encodeURIComponent(qrPayload)}`;
+            qrExpiresAt = data.expires_at * 1000;
+            setConnectionStatus("online", "Terhubung ke server");
+          }
+        } catch (e) {
+          // Network error murni (server tidak terjangkau sama sekali)
+          setConnectionStatus("offline", "Tidak bisa terhubung ke server");
+        } finally {
+          isFetchingQr = false;
+        }
+      }
+
+      function tickCountdown() {
+        const remainingMs = qrExpiresAt - Date.now();
+        if (remainingMs <= 0) {
+          DOM.countdownNote.textContent = "Mengambil QR baru...";
+          DOM.countdownFill.style.width = "0%";
+          fetchQrToken();
+          return;
+        }
+        const totalMs = <?= (int) QR_SESI_DURASI ?> * 1000;
+        const pct = Math.max(0, Math.min(100, (remainingMs / totalMs) * 100));
+        DOM.countdownFill.style.width = pct + "%";
+        DOM.countdownNote.textContent = `QR berlaku ${Math.ceil(remainingMs / 1000)} detik lagi`;
+      }
+
+      // ============================================================
+      // DATA MAHASISWA
+      // ============================================================
+      function renderDataTable(data) {
+        DOM.tableBody.innerHTML = "";
+        if (!data || data.length === 0) {
+          DOM.loadingData.innerHTML = '<i class="fas fa-info-circle"></i> Tidak ada data';
+          DOM.loadingData.style.display = "block";
+          DOM.dataTable.style.display = "none";
+          return;
+        }
+        data.forEach((mhs) => {
+          const isHadir = !!(mhs.hadir_hari_ini === 1 || mhs.hadir_hari_ini === true);
+          const row = document.createElement("tr");
+          row.innerHTML = `
+            <td>${mhs.nim || "-"}</td>
+            <td>${mhs.nama || "-"}</td>
+            <td>${mhs.kelas || "-"}</td>
+            <td>
+              <span class="${isHadir ? "status-hadir" : "status-belum"}">
+                <i class="fas ${isHadir ? "fa-check-circle" : "fa-circle"}"></i>
+                ${isHadir ? "Hadir" : "Belum"}
+              </span>
+            </td>`;
+          DOM.tableBody.appendChild(row);
+        });
+        DOM.loadingData.style.display = "none";
+        DOM.dataTable.style.display = "table";
+      }
+
+      async function loadDataMahasiswa() {
+        DOM.loadingData.style.display = "block";
+        DOM.dataTable.style.display = "none";
+        DOM.loadingData.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Mengambil data...';
+        try {
+          const response = await fetch(API_URL + "?action=get_all", {
+            headers: { Accept: "application/json" },
+          });
+          if (response.status === 401) {
+            window.location.href = "login.php";
+            return;
+          }
+          const data = await response.json();
+          if (Array.isArray(data)) {
+            renderDataTable(data);
+            DOM.totalMahasiswa.textContent = data.length + " mahasiswa";
+            setConnectionStatus("online", "Online");
+            showStatus(`${data.length} data mahasiswa dimuat`, "success", 2500);
+          } else {
+            renderDataTable([]);
+          }
+        } catch (error) {
+          DOM.loadingData.innerHTML = `<i class="fas fa-exclamation-circle"></i> Gagal memuat data: ${error.message}`;
+          setConnectionStatus("offline", "Gagal terhubung");
+        }
+      }
+
+      // ============================================================
+      // BACKGROUND MORPH-REVEAL TRAIL
+      // Mouse/touch trail "menghapus" gambar bunga depan sehingga
+      // gambar bunga kedua di belakangnya muncul mengikuti bentuk
+      // blob yang memudar.
+      //
+      // FIX iPad: versi lama pakai CSS mask-image yang di-generate
+      // ulang lewat canvas.toDataURL() setiap frame (60x/detik).
+      // Encoding PNG base64 sebanyak itu sangat berat dan implementasi
+      // mask-image dinamis di Safari/WebKit iOS tidak stabil, jadi
+      // bikin animasi patah-patah / macet / glitch di iPad.
+      //
+      // Sekarang efeknya digambar langsung di dua elemen <canvas>
+      // yang ditumpuk (tanpa mask, tanpa toDataURL), jauh lebih ringan
+      // dan stabil di WebKit.
+      // ============================================================
+      const TRAIL_MAX_POINTS = 60;
+      const TRAIL_HEAD_R = 140;
+      const TRAIL_NOISE_AMP = 44;
+      const TRAIL_BLOB_PTS = 24;
+      const TRAIL_FADE_SPEED = 0.92;
+      const TRAIL_SAMPLE_DIST = 8;
+
+      function drawMorphBlob(ctx, cx, cy, r, t, seed) {
+        if (r < 2) return;
+        const pts = [];
+        for (let i = 0; i < TRAIL_BLOB_PTS; i++) {
+          const angle = (i / TRAIL_BLOB_PTS) * Math.PI * 2;
+          const n1 = Math.sin(angle * 3 + t * 1.4 + seed) * 0.45;
+          const n2 = Math.sin(angle * 5 - t * 0.9 + seed * 2.3) * 0.3;
+          const n3 = Math.cos(angle * 2 + t * 1.8 + seed * 0.7) * 0.25;
+          const noise = (n1 + n2 + n3) * TRAIL_NOISE_AMP * (r / TRAIL_HEAD_R);
+          const rad = r + noise;
+          pts.push({ x: cx + Math.cos(angle) * rad, y: cy + Math.sin(angle) * rad });
+        }
+        ctx.beginPath();
+        for (let i = 0; i < pts.length; i++) {
+          const curr = pts[i];
+          const next = pts[(i + 1) % pts.length];
+          const midX = (curr.x + next.x) / 2;
+          const midY = (curr.y + next.y) / 2;
+          if (i === 0) ctx.moveTo(midX, midY);
+          else ctx.quadraticCurveTo(curr.x, curr.y, midX, midY);
+        }
+        ctx.closePath();
+        ctx.fill();
+      }
+
+      // Menggambar image dengan perilaku seperti CSS object-fit: cover
+      function drawCover(ctx, img, w, h) {
+        if (!img || !img.naturalWidth) return;
+        const ir = img.naturalWidth / img.naturalHeight;
+        const cr = w / h;
+        let dw, dh, dx, dy;
+        if (ir > cr) {
+          dh = h; dw = h * ir; dx = (w - dw) / 2; dy = 0;
+        } else {
+          dw = w; dh = w / ir; dx = 0; dy = (h - dh) / 2;
+        }
+        ctx.drawImage(img, dx, dy, dw, dh);
+      }
+
+      function initBackgroundTrail() {
+        const revealCanvas = document.getElementById("bgReveal");
+        const frontCanvas = document.getElementById("bgFront");
+        if (!revealCanvas || !frontCanvas) return;
+
+        const revealCtx = revealCanvas.getContext("2d");
+        const frontCtx = frontCanvas.getContext("2d");
+
+        const revealImg = new Image();
+        const frontImg = new Image();
+        revealImg.crossOrigin = "anonymous";
+        frontImg.crossOrigin = "anonymous";
+        revealImg.src = "https://images.higgs.ai/?default=1&output=webp&url=https%3A%2F%2Fd8j0ntlcm91z4.cloudfront.net%2Fuser_38xzZboKViGWJOttwIXH07lWA1P%2Fhf_20260808_151324_bf318a5f-5525-4fc7-aab5-e9a341018828.png&w=1280&q=85";
+        frontImg.src = "https://images.higgs.ai/?default=1&output=webp&url=https%3A%2F%2Fd8j0ntlcm91z4.cloudfront.net%2Fuser_38xzZboKViGWJOttwIXH07lWA1P%2Fhf_20260808_192942_e1086505-d7da-433b-a59b-8220f4e6c808.png&w=1280&q=85";
+
+        let points = [];
+        let hovering = false;
+        let mouseX = window.innerWidth / 2;
+        let mouseY = window.innerHeight / 2;
+        let headRadius = 0;
+        let lastSample = { x: mouseX, y: mouseY };
+        let idleLastSample = { x: mouseX, y: mouseY };
+        let time = 0;
+        let started = false;
+
+        function resizeCanvases() {
+          const dpr = Math.min(window.devicePixelRatio || 1, 2);
+          [revealCanvas, frontCanvas].forEach((c) => {
+            c.width = window.innerWidth * dpr;
+            c.height = window.innerHeight * dpr;
+            c.getContext("2d").setTransform(dpr, 0, 0, dpr, 0, 0);
+          });
+          // Reveal layer statis, cukup digambar ulang saat resize
+          drawCover(revealCtx, revealImg, window.innerWidth, window.innerHeight);
+        }
+        resizeCanvases();
+        window.addEventListener("resize", resizeCanvases);
+
+        window.addEventListener("mousemove", (e) => {
+          mouseX = e.clientX;
+          mouseY = e.clientY;
+          hovering = true;
+        });
+        document.addEventListener("mouseleave", () => {
+          hovering = false;
+        });
+        window.addEventListener("touchmove", (e) => {
+          const t = e.touches[0];
+          if (!t) return;
+          mouseX = t.clientX;
+          mouseY = t.clientY;
+          hovering = true;
+        }, { passive: true });
+        window.addEventListener("touchend", () => {
+          hovering = false;
+        });
+
+        function tick() {
+          const w = window.innerWidth;
+          const h = window.innerHeight;
+
+          const targetR = hovering ? TRAIL_HEAD_R : 0;
+          headRadius += (targetR - headRadius) * (hovering ? 0.14 : 0.04);
+
+          if (hovering && headRadius > 5) {
+            const dx = mouseX - lastSample.x;
+            const dy = mouseY - lastSample.y;
+            if (points.length === 0 || Math.hypot(dx, dy) > TRAIL_SAMPLE_DIST) {
+              points.push({ x: mouseX, y: mouseY, r: headRadius, alpha: 1, seed: Math.random() * 100 });
+              if (points.length > TRAIL_MAX_POINTS) points.shift();
+              lastSample = { x: mouseX, y: mouseY };
+            }
+          } else {
+            // Belum ada interaksi mouse — kirim blob melayang pelan
+            // otomatis supaya background tetap hidup, bukan diam.
+            const idleX = w * 0.5 + Math.sin(time * 0.28) * w * 0.22;
+            const idleY = h * 0.42 + Math.cos(time * 0.21) * h * 0.18;
+            const dx = idleX - idleLastSample.x;
+            const dy = idleY - idleLastSample.y;
+            if (points.length === 0 || Math.hypot(dx, dy) > TRAIL_SAMPLE_DIST) {
+              points.push({ x: idleX, y: idleY, r: TRAIL_HEAD_R * 0.6, alpha: 1, seed: Math.random() * 100 });
+              if (points.length > TRAIL_MAX_POINTS) points.shift();
+              idleLastSample = { x: idleX, y: idleY };
+            }
+          }
+
+          points.forEach((p) => {
+            p.alpha *= TRAIL_FADE_SPEED;
+            p.r *= 0.995;
+          });
+          points = points.filter((p) => p.alpha >= 0.01);
+          time += 0.016;
+
+          // Gambar ulang front layer penuh, lalu "lubangi" pakai blob trail
+          // supaya reveal layer di baliknya terlihat lewat lubang tsb.
+          frontCtx.clearRect(0, 0, w, h);
+          drawCover(frontCtx, frontImg, w, h);
+          frontCtx.globalCompositeOperation = "destination-out";
+          points.forEach((p) => {
+            frontCtx.globalAlpha = p.alpha;
+            drawMorphBlob(frontCtx, p.x, p.y, p.r, time, p.seed);
+          });
+          frontCtx.globalAlpha = 1;
+          frontCtx.globalCompositeOperation = "source-over";
+
+          requestAnimationFrame(tick);
+        }
+
+        function startOnce() {
+          if (started) return;
+          started = true;
+          tick();
+        }
+
+        frontImg.onload = startOnce;
+        revealImg.onload = () => drawCover(revealCtx, revealImg, window.innerWidth, window.innerHeight);
+
+        // Jaga-jaga kalau gambar sudah cached dan event "load" tidak fire lagi
+        if (frontImg.complete && frontImg.naturalWidth) startOnce();
+        if (revealImg.complete && revealImg.naturalWidth) {
+          drawCover(revealCtx, revealImg, window.innerWidth, window.innerHeight);
+        }
+      }
+
+      async function init() {
+        initBackgroundTrail();
+        setTimeout(() => document.body.classList.remove("anim"), 1400);
+        await fetchQrToken();
+        await loadDataMahasiswa();
+        qrTickTimer = setInterval(tickCountdown, 1000);
+        setInterval(loadDataMahasiswa, 15000);
+      }
+
+      document.addEventListener("DOMContentLoaded", init);
+    </script>
+  </body>
 </html>
